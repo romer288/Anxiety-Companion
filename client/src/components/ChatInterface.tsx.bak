@@ -1,0 +1,805 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+import { useSession } from "../context/SessionContext";
+import { Paperclip, Send, MoreVertical, Mic, Volume2, VolumeX, HelpCircle, Globe, Square, Check } from "lucide-react";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Skeleton } from "./ui/skeleton";
+import { Message } from "../lib/types";
+import { formatDistanceToNow } from "date-fns";
+import { useToast } from "../hooks/use-toast";
+import { submitMessage } from "../lib/session-utils";
+import { useEnhancedVoice } from "../hooks/use-enhanced-voice";
+import { useSafeSpeech } from "../hooks/use-safe-speech";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
+import { Badge } from "./ui/badge";
+
+// Since we can't directly import from shared, define these types here
+type SupportedLanguage = "en" | "es" | "pt";
+
+export default function ChatInterface() {
+  const { currentSession, userId, updateSession, startNewSession, isSessionActive } = useSession();
+  const [message, setMessage] = useState("");
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [isTyping, setIsTyping] = useState(false);
+  const [autoSpeak, setAutoSpeak] = useState(true);
+  const [language, setLanguage] = useState<SupportedLanguage>(
+    (currentSession.language as SupportedLanguage) || "en"
+  );
+  const chatAreaRef = useRef<HTMLDivElement>(null);
+  const { toast } = useToast();
+
+  // State for language menu
+  const [showLanguageMenu, setShowLanguageMenu] = useState(false);
+
+  // Initialize speech recognition and synthesis using our enhanced voice API with therapeutic pause detection
+  const { 
+    isListening, 
+    isSpeaking,
+    ready: speechSynthesisSupported,
+    listen,
+    stopListening,
+    speak, 
+    stopSpeaking,
+    setLanguage: setSpeechLanguage,
+    testVoices
+  } = useEnhancedVoice(language);
+
+  // Use our safe speech system to prevent speech recognition confusion
+  const {
+    isSpeaking: systemIsSpeaking,
+    shouldProcessSpeech,
+    interruptSpeech,
+    safeSpeakWithCallback
+  } = useSafeSpeech();
+
+  // Enable therapeutic continuous voice listening mode - listen all the time with intelligent pause detection
+  const [continuousListening, setContinuousListening] = useState(true);
+
+  // Update voice language when the interface language changes
+  useEffect(() => {
+    if (language) {
+      setSpeechLanguage(language);
+      console.log(`Changed voice language to: ${language}`);
+    }
+  }, [language, setSpeechLanguage]);
+
+  // Define the sendMessageHandler in advance to avoid dependency issues
+  const sendMessageHandler = useCallback(async (textToSend?: string) => {
+    // Process either the passed text or the current message state
+    const messageToSend = textToSend || message;
+    console.log("sendMessageHandler called with message:", messageToSend);
+    console.log("Current session:", currentSession);
+
+    if (!messageToSend.trim()) {
+      console.log("Message is empty, not sending");
+      return;
+    }
+
+    if (!currentSession.id) {
+      console.log("No current session ID, creating a new session");
+
+      try {
+        // Attempt to create a new session
+        const tempUserId = "guest-user-" + Date.now();
+        console.log("Creating new session for user:", tempUserId);
+
+        // This is using the startNewSession function from useSession() context
+        const newSession = await startNewSession(tempUserId);
+        console.log("New session created:", newSession);
+
+        // Alert the user
+        toast({
+          title: "New Session Created",
+          description: "Created a new conversation session for you.",
+        });
+
+        // We can continue now that we have a session
+      } catch (error) {
+        console.error("Failed to create a new session:", error);
+        toast({
+          variant: "destructive",
+          title: "Session Error",
+          description: "Could not create a new session. Please refresh the page and try again.",
+        });
+        return;
+      }
+    }
+
+    // Verify we have a valid session now
+    if (!currentSession.id) {
+      console.error("Still no valid session ID after attempts to create one");
+      toast({
+        variant: "destructive",
+        title: "Session Error",
+        description: "No active session. Please refresh the page and try again.",
+      });
+      return;
+    }
+
+    // Create user message object
+    const userMessage: Message = {
+      type: "message",
+      text: messageToSend,
+      isUser: true,
+      timestamp: new Date().toISOString(),
+    };
+
+    console.log("Created user message object:", userMessage);
+
+    // Add to UI immediately
+    setMessages((prev) => [...prev, userMessage]);
+
+    // Clear input and show typing indicator
+    setMessage("");
+    setIsTyping(true);
+
+    try {
+      console.log("Sending message to server with session ID:", currentSession.id);
+
+      // Send message to server and get AI response
+      const response = await submitMessage(currentSession.id, messageToSend, true);
+      console.log("Response from submitMessage:", response);
+
+      // Handle successful response
+      if (response && response.success) {
+        console.log("API response success. Message:", response.message);
+
+        // Add AI response to messages
+        setMessages((prev) => [...prev, response.message]);
+
+        // Speak the AI response if auto-speak is enabled
+        const aiText = response.message.text as string;
+        console.log("AI response text for speech:", aiText);
+        if (autoSpeak && aiText) {
+          console.log("Attempting to speak AI response with voice settings:", language);
+
+          // First, stop any existing speech and listening
+          stopSpeaking();
+          stopListening();
+
+          // Get language-specific voice settings
+          let pitch = 1.15; // Default (English - Dua Lipa style)
+          let rate = 0.95;  // Default
+
+          if (language === 'es') {
+            pitch = 1.5;  // Spanish (Mónica - Spain)
+            rate = 1.0;   
+          } else if (language === 'pt') {
+            pitch = 1.4;  // Portuguese (Apple Luciana)
+            rate = 0.93;  
+          }
+
+          // Use our safer speech approach that manages speech recognition automatically
+          safeSpeakWithCallback({
+            text: aiText,
+            lang: language,
+            pitch: pitch,
+            rate: rate,
+            // On start callback - make sure listening is disabled
+            onStart: () => {
+              console.log("🔊 AI response speech started - speech recognition disabled");
+              stopListening(); // Extra safety
+            },
+            // On end callback - re-enable listening with therapeutic safeguards
+            onEnd: () => {
+              console.log("🔊 AI response speech ended - therapeutic speech recognition can resume");
+
+              // Wait a moment before re-enabling speech recognition with therapeutic timing
+              setTimeout(() => {
+                if (!systemIsSpeaking && continuousListening) {
+                  console.log("🧠 Restarting therapeutic voice listening after AI response");
+                  listen((text: string) => {
+                    // Will only process if system is not speaking and with therapeutic consideration
+                    if (shouldProcessSpeech(text)) {
+                      console.log("Processing patient speech after AI response:", text);
+                      setMessage(text);
+                      sendMessageHandler(text);
+                    }
+                  });
+                }
+              }, 1500); // Slightly longer wait to ensure clean transition in therapeutic context
+            }
+          });
+        } else {
+          console.log("Not speaking. autoSpeak:", autoSpeak, 
+                     "aiText exists:", !!aiText);
+        }
+
+        // Update session if needed
+        if (response.session) {
+          console.log("Updating session with:", response.session);
+          updateSession(response.session);
+        }
+      } else {
+        console.error("API response indicates failure:", response);
+        // Handle error
+        toast({
+          variant: "destructive",
+          title: "Error from server",
+          description: response?.message || "Failed to get a response",
+        });
+      }
+    } catch (error) {
+      console.error("Error sending message:", error);
+      toast({
+        variant: "destructive",
+        title: "Communication Error",
+        description: "Failed to communicate with the server. Please try again.",
+      });
+    } finally {
+      // Hide typing indicator
+      setIsTyping(false);
+    }
+  }, [message, currentSession, toast, startNewSession, autoSpeak, speechSynthesisSupported, speak, language, updateSession]);
+
+  // Flag to track if we've already shown the listening toast
+  const listeningToastShownRef = useRef(false);
+
+  // Store previous transcription to avoid duplicates
+  const previousTranscriptionRef = useRef<string>("");
+
+  // Use combined state to determine when it's safe to listen with therapeutic consideration
+  const canListen = speechSynthesisSupported && continuousListening && !isSpeaking && !systemIsSpeaking;
+
+  // Create a function to handle transcription with therapeutic patience
+  const handleTherapeuticTranscription = useCallback((text: string) => {
+    // Only process transcription if it's safe (not the system's own voice) and with therapeutic validation
+    if (shouldProcessSpeech(text) && 
+        text && 
+        text.trim().length > 2 && 
+        text !== previousTranscriptionRef.current) {
+
+      console.log("🎤 Valid patient speech detected (therapeutic mode):", text);
+
+      // Store current transcription to avoid duplicates
+      previousTranscriptionRef.current = text;
+
+      // Update UI and send message
+      setMessage(text);
+
+      // Show confirmation toast with therapeutic language
+      toast({
+        title: "Message received",
+        description: "Your voice message was processed. Take your time with your thoughts.",
+        duration: 2000,
+      });
+
+      // Send to server
+      sendMessageHandler(text);
+    }
+  }, [shouldProcessSpeech, setMessage, toast, sendMessageHandler]);
+
+  // Main therapeutic speech recognition effect
+  useEffect(() => {
+    // Only proceed if we can listen
+    if (!canListen) return;
+
+    // Show a therapeutic welcome toast only once per session
+    if (!listeningToastShownRef.current) {
+      toast({
+        title: "Therapeutic voice mode active",
+        description: "Just start speaking whenever you're ready. Take your time - I'll wait for you to finish your thoughts before responding.",
+        duration: 4000,
+      });
+      listeningToastShownRef.current = true;
+    }
+
+    // Track active state
+    let isActive = true;
+
+    // Function to start therapeutic voice recognition with proper delay
+    const startTherapeuticVoiceRecognition = () => {
+      if (!isActive) return;
+
+      console.log("🧠 Starting therapeutic voice recognition with intelligent pause detection...");
+
+      // Start listening with our therapeutic callback
+      listen(handleTherapeuticTranscription);
+    };
+
+    // Allow a proper buffer time before starting to listen (therapeutic patience)
+    const startTimer = setTimeout(startTherapeuticVoiceRecognition, 500);
+
+    // Cleanup
+    return () => {
+      isActive = false;
+      clearTimeout(startTimer);
+      stopListening();
+    };
+  }, [
+    canListen,
+    listen,
+    stopListening,
+    toast,
+    handleTherapeuticTranscription
+  ]);
+
+  // Returns personalized welcome message based on language
+  const getWelcomeMessage = (lang: SupportedLanguage): string => {
+    // Customized welcome messages by our celebrity personas
+    const welcomeMessages = {
+      en: "Hi there, I'm Dua, your anxiety companion. I'm here to help you manage your anxiety using evidence-based techniques. How are you feeling today? Is there anything specific that's causing you anxiety?",
+      es: "Hola, soy Kate, tu compañera para la ansiedad. Estoy aquí para ayudarte a manejar tu ansiedad usando técnicas basadas en evidencia. ¿Cómo te sientes hoy? ¿Hay algo específico que te esté causando ansiedad?",
+      pt: "Olá, eu sou Letícia, sua companheira para ansiedade. Estou aqui para ajudá-lo a gerenciar sua ansiedade usando técnicas baseadas em evidências. Como você está se sentindo hoje? Existe algo específico que esteja causando sua ansiedade?"
+    };
+
+    return welcomeMessages[lang] || welcomeMessages.en;
+  };
+
+  // Simplified sendMessage - just a wrapper for sendMessageHandler
+  const sendMessage = useCallback(() => {
+    // Just call the handler with the current message state
+    sendMessageHandler();
+  }, [sendMessageHandler]);
+
+  // Initialize chat with welcome messages
+  useEffect(() => {
+    if (currentSession.id && messages.length === 0) {
+      const welcomeMessage = getWelcomeMessage(language);
+
+      setMessages([
+        {
+          type: "system",
+          text: `Today, ${formatDistanceToNow(new Date(), { addSuffix: true })} • Session Started`,
+          timestamp: new Date().toISOString(),
+        },
+        {
+          type: "message",
+          text: welcomeMessage,
+          isUser: false,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+
+      // Always speak the welcome message with a slight delay
+      // Make sure auto-speak is enabled by default
+      setAutoSpeak(true);
+
+      setTimeout(() => {
+        console.log("Speaking welcome message with celebrity voice:", language);
+
+        // Always force stop any current speech and listening first
+        stopSpeaking();
+        stopListening();
+
+        // Get language-specific voice settings
+        let pitch = 1.15; // Default (English - Dua Lipa style)
+        let rate = 0.95;  // Default
+
+        if (language === 'es') {
+          pitch = 1.5;  // Spanish (Mónica)
+          rate = 1.0;   
+        } else if (language === 'pt') {
+          pitch = 1.4;  // Portuguese (Luciana)
+          rate = 0.93;  
+        }
+
+        // Use our special safe speech system that automatically prevents
+        // the system from listening to itself
+        safeSpeakWithCallback({
+          text: welcomeMessage,
+          lang: language,
+          pitch: pitch,
+          rate: rate,
+          // On start callback
+          onStart: () => {
+            console.log("🔊 Welcome message started - speech recognition disabled");
+            stopListening(); // Extra safety
+          },
+          // On end callback with therapeutic consideration
+          onEnd: () => {
+            console.log("🔊 Welcome message ended - therapeutic speech recognition can resume");
+            // Wait a therapeutic moment before re-enabling speech recognition
+            setTimeout(() => {
+              if (!systemIsSpeaking && continuousListening) {
+                console.log("🧠 Starting therapeutic listening after welcome message");
+                listen((text) => {
+                  // Will only process if system is not speaking
+                  if (shouldProcessSpeech(text)) {
+                    console.log("Processing patient speech after welcome:", text);
+                    setMessage(text);
+                    sendMessageHandler(text);
+                  }
+                });
+              }
+            }, 1500); // Therapeutic pause after welcome message
+          }
+        });
+      }, 1000);
+    }
+  }, [currentSession.id, messages.length, speechSynthesisSupported, speak, language]);
+
+  // Handle Enter key press
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+
+  // Setup interruption capability when AI is speaking
+  useEffect(() => {
+    // Check if we need to setup voice interruption
+    if (isSpeaking) {
+      // Create an event handler for when the user speaks during AI speech
+      const handleUserInterruption = () => {
+        console.log('User interrupted AI speech');
+        stopSpeaking();
+
+        // Optionally start listening to the user with therapeutic consideration
+        setTimeout(() => {
+          listen((text) => {
+            setMessage(text);
+            sendMessage();
+          });
+        }, 500); // Brief pause before restarting listening
+      };
+
+      // Setup speech recognition to listen for interruptions
+      // Add keypress event for "stop" button alternative
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape' || e.key === ' ') {
+          console.log('User pressed stop key');
+          stopSpeaking();
+        }
+      };
+
+      // Add event listeners
+      document.addEventListener('keydown', handleKeyDown);
+
+      return () => {
+        // Clean up
+        document.removeEventListener('keydown', handleKeyDown);
+      };
+    }
+  }, [isSpeaking, stopSpeaking, listen, setMessage, sendMessage]);
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    if (chatAreaRef.current) {
+      chatAreaRef.current.scrollTop = chatAreaRef.current.scrollHeight;
+    }
+  }, [messages, isTyping]);
+
+  // Handle language change
+  const handleLanguageChange = async (newLanguage: SupportedLanguage) => {
+    // Update state
+    setLanguage(newLanguage);
+    setSpeechLanguage(newLanguage);
+
+    // Update session language in database
+    if (currentSession.id) {
+      await updateSession({ language: newLanguage });
+      console.log(`Updated session language to ${newLanguage}`);
+    }
+
+    // Close the language menu
+    setShowLanguageMenu(false);
+
+    // Show confirmation
+    toast({
+      description: `Language changed to ${
+        newLanguage === 'en' ? 'English' : 
+        newLanguage === 'es' ? 'Spanish' : 
+        'Portuguese'
+      }`,
+      duration: 2000,
+    });
+
+    // If speaking, stop speaking and restart with new voice
+    if (isSpeaking) {
+      stopSpeaking();
+    }
+  };
+
+  // Therapeutic voice feedback to help users understand intelligent voice detection
+  const getTherapeuticVoiceStatus = () => {
+    if (isListening) {
+      return "Listening with therapeutic patience... Take your time to express your thoughts fully.";
+    } else if (speechSynthesisSupported) {
+      return "Click mic to speak - I'll wait patiently for you to finish your complete thought";
+    } else {
+      return "Voice not supported in this browser";
+    }
+  };
+
+  return (
+    <section className="flex-grow flex flex-col">
+      <div className="p-4 bg-white border-b border-secondary-200 shadow-sm flex items-center justify-between">
+        <div>
+          <h2 className="font-semibold">Chat with your AI companion</h2>
+          <p className="text-sm text-secondary-500">Let's work through your anxiety together - take your time</p>
+        </div>
+        <div className="flex items-center space-x-2">
+          <Button variant="ghost" size="icon">
+            <MoreVertical className="h-5 w-5 text-secondary-500" />
+          </Button>
+        </div>
+      </div>
+
+      {/* Chat Area */}
+      <div ref={chatAreaRef} className="flex-grow p-4 overflow-y-auto space-y-5 bg-gradient-to-b from-blue-50 to-white">
+        {messages.map((msg, index) => {
+          if (msg.type === "system") {
+            return (
+              <div key={index} className="mx-auto max-w-md text-center bg-blue-100 text-blue-700 text-sm py-2 px-6 rounded-full mb-6 shadow-sm">
+                <span className="font-medium">{msg.text}</span>
+              </div>
+            );
+          } else {
+            return (
+              <div 
+                key={index} 
+                className={`chat-bubble ${msg.isUser ? 'user-message' : 'ai-message'} p-4 ${msg.isUser ? 'ml-auto' : ''}`}
+              >
+                <div className="whitespace-pre-wrap">{msg.text as string}</div>
+                <div className="flex justify-between items-center mt-2">
+                  <div className={`text-xs ${msg.isUser ? 'text-blue-200' : 'text-gray-400'}`}>
+                    {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                  </div>
+
+                  {/* Add stop button for AI messages when speaking */}
+                  {!msg.isUser && isSpeaking && index === messages.length - 1 && (
+                    <Button 
+                      size="sm" 
+                      variant="destructive" 
+                      className="py-0 h-6 text-xs" 
+                      onClick={stopSpeaking}
+                    >
+                      <Square className="h-3 w-3 mr-1" />
+                      Stop
+                    </Button>
+                  )}
+                </div>
+              </div>
+            );
+          }
+        })}
+
+        {/* Empty State */}
+        {messages.length <= 2 && (
+          <div className="flex flex-col items-center justify-center text-center p-6 mt-8 mb-20">
+            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-4">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-primary">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+              </svg>
+            </div>
+            <h3 className="text-lg font-semibold text-gray-800 mb-2">Start a conversation</h3>
+            <p className="text-gray-500 max-w-xs">
+              Share how you're feeling or what's causing your anxiety. I'm here to listen and help. Take your time.
+            </p>
+          </div>
+        )}
+
+        {/* Typing Indicator */}
+        {isTyping && (
+          <div className="chat-bubble ai-message p-3 typing-indicator">
+            <span></span><span></span><span></span>
+          </div>
+        )}
+      </div>
+
+      {/* Session status indicators */}
+      {currentSession && currentSession.preAnxietyLevel !== null && (
+        <div className="px-4 py-2 bg-gray-50 border-t border-secondary-200 flex items-center justify-center">
+          <div className="flex items-center space-x-3">
+            <Badge variant="outline" className="bg-blue-50 text-blue-700 hover:bg-blue-100">
+              <HelpCircle className="h-3 w-3 mr-1" />
+              Auto-detected anxiety: {currentSession.preAnxietyLevel}/10
+            </Badge>
+            {currentSession.triggerCategory && (
+              <Badge variant="outline" className="bg-orange-50 text-orange-700 hover:bg-orange-100">
+                Potential trigger: {currentSession.triggerCategory}
+              </Badge>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Chat Input */}
+      <div className="p-4 bg-white border-t border-secondary-200 shadow-md">
+        <div className="flex flex-col space-y-2 max-w-4xl mx-auto">
+          {/* Voice and Language Controls */}
+          <div className="flex items-center justify-end space-x-2 mb-1">
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    className="flex items-center space-x-1 rounded-full bg-blue-50 text-blue-600"
+                    onClick={() => {
+                      // Cycle through languages: en -> es -> pt -> en
+                      const nextLanguage: Record<SupportedLanguage, SupportedLanguage> = {
+                        "en": "es",
+                        "es": "pt",
+                        "pt": "en"
+                      };
+                      handleLanguageChange(nextLanguage[language]);
+                    }}
+                  >
+                    <Globe className="h-4 w-4 mr-1" />
+                    <span className="uppercase">{language}</span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Change language (English, Spanish, Portuguese)</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className={`rounded-full ${autoSpeak ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-600'}`}
+                    onClick={() => setAutoSpeak(!autoSpeak)}
+                  >
+                    {autoSpeak ? <Volume2 className="h-4 w-4 mr-1" /> : <VolumeX className="h-4 w-4 mr-1" />}
+                    {autoSpeak ? "Voice On" : "Voice Off"}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{autoSpeak ? "Turn off AI voice" : "Turn on AI voice"}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+
+          {/* Input Field & Buttons */}
+          <div className="flex items-center space-x-3">
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {isSpeaking ? (
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      className="rounded-full bg-red-100 text-red-500 hover:bg-red-200" 
+                      onClick={() => {
+                        // Use new interruptSpeech function instead of just stopping
+                        interruptSpeech();
+                        toast({
+                          description: "Voice response interrupted",
+                          duration: 2000,
+                        });
+                      }}
+                    >
+                      <Square className="h-5 w-5" />
+                    </Button>
+                  ) : (
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      className={`rounded-full ${!speechSynthesisSupported ? 'bg-gray-100' : continuousListening ? 'bg-green-100 text-green-600' : 'bg-blue-50 hover:bg-blue-100'}`} 
+                      onClick={() => {
+                        // Toggle continuous listening mode
+                        const newState = !continuousListening;
+                        setContinuousListening(newState);
+
+                        if (!newState) {
+                          // Turn off continuous listening
+                          stopListening();
+                          listeningToastShownRef.current = false; // Reset toast flag
+                          toast({
+                            title: "Therapeutic voice mode disabled",
+                            description: "Voice recognition turned off. Click the mic to re-enable when ready.",
+                            duration: 2000,
+                          });
+                        } else {
+                          // Turn on continuous listening
+                          listeningToastShownRef.current = false; // Reset so the toast will show
+                          toast({
+                            title: "Therapeutic voice mode enabled",
+                            description: "Just start speaking whenever you're ready. I'll wait patiently for your complete thoughts.",
+                            duration: 4000,
+                          });
+
+                          // Don't start listening here - let the effect do it
+                          // This avoids duplicate listening sessions
+                        }
+                      }}
+                      disabled={!speechSynthesisSupported}
+                    >
+                      {/* Mic icon changes based on continuous listening status */}
+                      {isListening ? (
+                        <div className="relative">
+                          <Mic className="h-5 w-5 text-green-500" />
+                          <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                          </span>
+                        </div>
+                      ) : continuousListening ? (
+                        <div className="relative">
+                          <Mic className="h-5 w-5 text-green-600" />
+                          <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                            <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                          </span>
+                        </div>
+                      ) : (
+                        <Mic className="h-5 w-5" />
+                      )}
+                    </Button>
+                  )}
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <div className="space-y-2">
+                    <p>
+                      {isSpeaking ? "Stop voice response" : 
+                      isListening ? "Listening with therapeutic patience - will auto-send when you finish your complete thought" : 
+                      continuousListening ? "Therapeutic voice mode ACTIVE - Speak anytime, I'll wait for your complete thoughts!" : 
+                      speechSynthesisSupported ? "Click to activate therapeutic voice listening mode" : 
+                      "Voice input not supported"}
+                    </p>
+                    {speechSynthesisSupported && !isSpeaking && (
+                      <div className="border-t border-gray-200 pt-2 mt-1">
+                        <p className="text-xs font-medium mb-1">Celebrity voice personas:</p>
+                        <ul className="text-xs list-disc pl-3">
+                          <li>English: Dua Lipa</li>
+                          <li>Spanish: Kate del Castillo</li>
+                          <li>Portuguese: Letícia Colin</li>
+                        </ul>
+                        {continuousListening ? (
+                          <p className="text-xs text-green-600 mt-2 font-bold">✓ THERAPEUTIC MODE - Speak naturally and pause when done. I'll wait patiently for your complete thoughts!</p>
+                        ) : (
+                          <p className="text-xs text-blue-600 mt-2">Therapeutic listening mode is off. Click the mic button to enable.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            <div className="flex-grow relative">
+              <Input
+                id="chat-input"
+                type="text"
+                placeholder={isListening ? "Listening with therapeutic patience... Take your time to express yourself fully. I'll wait for you to finish." : "Type your message or speak naturally..."}
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyPress={handleKeyPress}
+                className={`w-full py-3 px-5 focus:outline-none focus:ring-2 shadow-sm ${
+                  isListening 
+                    ? "border-green-400 focus:ring-green-300 focus:border-green-400 bg-green-50" 
+                    : "border border-blue-200 focus:ring-primary-300 focus:border-primary-300"
+                } rounded-full`}
+                disabled={isListening}
+              />
+
+              {isListening && (
+                <div className="absolute right-4 top-1/2 transform -translate-y-1/2 flex items-center">
+                  <span className="text-xs text-green-600 mr-2 italic">Listening patiently...</span>
+                  <div className="flex space-x-1">
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse delay-75"></div>
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse delay-150"></div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <Button 
+              type="button" 
+              className="rounded-full bg-primary-600 hover:bg-primary-700 text-white" 
+              disabled={!message.trim() || isListening}
+              onClick={sendMessage}
+            >
+              <Send className="h-5 w-5" />
+            </Button>
+          </div>
+
+          {/* Therapeutic voice recognition status */}
+          {speechSynthesisSupported && (
+            <div className="text-center">
+              <p className="text-xs text-gray-500">{getTherapeuticVoiceStatus()}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
