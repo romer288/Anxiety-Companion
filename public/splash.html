@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loading Anxiety Companion</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #5664d2;
+      color: white;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      text-align: center;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    
+    .icon {
+      width: 120px;
+      height: 120px;
+      background-color: white;
+      border-radius: 24px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin-bottom: 30px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+    }
+    
+    .icon-letter {
+      color: #5664d2;
+      font-size: 60px;
+      font-weight: bold;
+    }
+    
+    h1 {
+      font-size: 24px;
+      margin: 0 0 8px 0;
+      font-weight: 500;
+    }
+    
+    .loading {
+      margin-top: 30px;
+      height: 4px;
+      width: 200px;
+      background-color: rgba(255,255,255,0.2);
+      border-radius: 2px;
+      overflow: hidden;
+      position: relative;
+    }
+    
+    .loading-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      width: 50px;
+      background-color: white;
+      border-radius: 2px;
+      animation: loading 1.5s infinite ease-in-out;
+    }
+    
+    @keyframes loading {
+      0% {
+        left: -50px;
+      }
+      100% {
+        left: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="icon">
+    <div class="icon-letter">A</div>
+  </div>
+  <h1>Anxiety Companion</h1>
+  <p>Your personal mental wellness coach</p>
+  <div class="loading">
+    <div class="loading-bar"></div>
+  </div>
+  
+  <script>
+    // Redirect to the main app after a short delay
+    setTimeout(() => {
+      window.location.href = '/';
+    }, 1500);
+  </script>
+</body>
+</html>

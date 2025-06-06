@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="512" height="512" rx="102" fill="#5664d2"/>
+  
+  <!-- Circle in the middle -->
+  <circle cx="256" cy="256" r="170" fill="white"/>
+  
+  <!-- Letter "A" -->
+  <path d="M231.573 350H194.72L272.613 162H316.773L394.667 350H357.813L304.48 209.36H284.907L231.573 350ZM225.173 281.467H364.213V312.867H225.173V281.467Z" fill="#5664d2"/>
+</svg>
